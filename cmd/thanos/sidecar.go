@@ -22,12 +22,13 @@ import (
 	"github.com/improbable-eng/thanos/pkg/store"
 	"github.com/improbable-eng/thanos/pkg/store/storepb"
 	"github.com/oklog/run"
-	"github.com/opentracing/opentracing-go"
+	opentracing "github.com/opentracing/opentracing-go"
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/tsdb/labels"
 	"google.golang.org/grpc"
-	"gopkg.in/alecthomas/kingpin.v2"
+  "gopkg.in/alecthomas/kingpin.v2"
+	yaml "gopkg.in/yaml.v2"
 )
 
 func registerSidecar(m map[string]setupFunc, app *kingpin.Application, name string) {
@@ -105,10 +106,10 @@ func runSidecar(
 	var m = &promMetadata{
 		promURL: promURL,
 
-		// Start out with the full time range. The shipper will constrain it later.
-		// TODO(fabxc): minimum timestamp is never adjusted if shipping is disabled.
-		mint: 0,
-		maxt: math.MaxInt64,
+	readinessProber, err := metricHTTPListenGroup(g, logger, reg, httpBindAddr, component)
+	if err != nil {
+		readinessProber.SetNotHealthy(err)
+		return err
 	}
 
 	// Setup all the concurrent groups.
@@ -133,6 +134,7 @@ func runSidecar(
 						"msg", "failed to fetch initial external labels. Is Prometheus running? Retrying",
 						"err", err,
 					)
+					readinessProber.SetNotReady(err)
 					promUp.Set(0)
 					return err
 				}
@@ -168,18 +170,21 @@ func runSidecar(
 				if err := m.UpdateLabels(iterCtx, logger); err != nil {
 					level.Warn(logger).Log("msg", "heartbeat failed", "err", err)
 					promUp.Set(0)
+					readinessProber.SetNotReady(err)
 				} else {
 					// Update gossip.
 					peer.SetLabels(m.LabelsPB())
 
 					promUp.Set(1)
+					readinessProber.SetReady()
 					lastHeartbeat.Set(float64(time.Now().UnixNano()) / 1e9)
 				}
 
 				return nil
 			})
-		}, func(error) {
+		}, func(err error) {
 			cancel()
+			readinessProber.SetNotReady(err)
 			peer.Close(2 * time.Second)
 		})
 	}
@@ -187,13 +192,12 @@ func runSidecar(
 		ctx, cancel := context.WithCancel(context.Background())
 		g.Add(func() error {
 			return reloader.Watch(ctx)
-		}, func(error) {
+		}, func(err error) {
+			readinessProber.SetNotReady(err)
 			cancel()
 		})
 	}
-	if err := metricHTTPListenGroup(g, logger, reg, httpBindAddr); err != nil {
-		return err
-	}
+
 	{
 		l, err := net.Listen("tcp", grpcBindAddr)
 		if err != nil {
@@ -218,8 +222,10 @@ func runSidecar(
 
 		g.Add(func() error {
 			level.Info(logger).Log("msg", "Listening for StoreAPI gRPC", "address", grpcBindAddr)
+			readinessProber.SetReady()
 			return errors.Wrap(s.Serve(l), "serve gRPC")
-		}, func(error) {
+		}, func(err error) {
+			readinessProber.SetNotReady(err)
 			s.Stop()
 			runutil.CloseWithLogOnErr(logger, l, "store gRPC listener")
 		})
@@ -291,6 +297,7 @@ func runSidecar(
 	}
 
 	level.Info(logger).Log("msg", "starting sidecar", "peer", peer.Name())
+	readinessProber.SetReady()
 	return nil
 }
 

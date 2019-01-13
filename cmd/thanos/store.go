@@ -10,15 +10,16 @@ import (
 	"github.com/go-kit/kit/log/level"
 	"github.com/improbable-eng/thanos/pkg/cluster"
 	"github.com/improbable-eng/thanos/pkg/objstore/client"
+	"github.com/improbable-eng/thanos/pkg/prober"
 	"github.com/improbable-eng/thanos/pkg/runutil"
 	"github.com/improbable-eng/thanos/pkg/store"
 	"github.com/improbable-eng/thanos/pkg/store/storepb"
 	"github.com/oklog/run"
-	"github.com/opentracing/opentracing-go"
+	opentracing "github.com/opentracing/opentracing-go"
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
-	"gopkg.in/alecthomas/kingpin.v2"
+	kingpin "gopkg.in/alecthomas/kingpin.v2"
 )
 
 // registerStore registers a store command.
@@ -92,9 +93,16 @@ func runStore(
 	syncInterval time.Duration,
 	blockSyncConcurrency int,
 ) error {
+	var readinessProber *prober.Prober
 	{
 		confContentYaml, err := objStoreConfig.Content()
 		if err != nil {
+			return err
+		}
+
+		readinessProber, err = metricHTTPListenGroup(g, logger, reg, httpBindAddr, component)
+		if err != nil {
+			readinessProber.SetNotHealthy(err)
 			return err
 		}
 
@@ -164,8 +172,10 @@ func runStore(
 
 		g.Add(func() error {
 			level.Info(logger).Log("msg", "Listening for StoreAPI gRPC", "address", grpcBindAddr)
+			readinessProber.SetReady()
 			return errors.Wrap(s.Serve(l), "serve gRPC")
-		}, func(error) {
+		}, func(err error) {
+			readinessProber.SetNotReady(err)
 			runutil.CloseWithLogOnErr(logger, l, "store gRPC listener")
 		})
 	}
@@ -190,10 +200,8 @@ func runStore(
 			peer.Close(5 * time.Second)
 		})
 	}
-	if err := metricHTTPListenGroup(g, logger, reg, httpBindAddr); err != nil {
-		return err
-	}
 
 	level.Info(logger).Log("msg", "starting store node")
+	readinessProber.SetReady()
 	return nil
 }

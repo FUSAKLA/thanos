@@ -19,6 +19,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/improbable-eng/thanos/pkg/extprom"
+	"github.com/improbable-eng/thanos/pkg/prober"
+	v1 "github.com/improbable-eng/thanos/pkg/query/api"
+	opentracing "github.com/opentracing/opentracing-go"
+	kingpin "gopkg.in/alecthomas/kingpin.v2"
+
 	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
 	"github.com/improbable-eng/thanos/pkg/alert"
@@ -30,7 +36,6 @@ import (
 	"github.com/improbable-eng/thanos/pkg/extprom"
 	"github.com/improbable-eng/thanos/pkg/objstore/client"
 	"github.com/improbable-eng/thanos/pkg/promclient"
-	"github.com/improbable-eng/thanos/pkg/rule/api"
 	"github.com/improbable-eng/thanos/pkg/runutil"
 	"github.com/improbable-eng/thanos/pkg/shipper"
 	"github.com/improbable-eng/thanos/pkg/store"
@@ -38,7 +43,6 @@ import (
 	"github.com/improbable-eng/thanos/pkg/tracing"
 	"github.com/improbable-eng/thanos/pkg/ui"
 	"github.com/oklog/run"
-	"github.com/opentracing/opentracing-go"
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/model"
@@ -52,7 +56,6 @@ import (
 	"github.com/prometheus/prometheus/util/strutil"
 	"github.com/prometheus/tsdb/labels"
 	"google.golang.org/grpc"
-	"gopkg.in/alecthomas/kingpin.v2"
 )
 
 // registerRule registers a rule command.
@@ -544,6 +547,7 @@ func runRule(
 			runutil.CloseWithLogOnErr(logger, l, "store gRPC listener")
 		})
 	}
+	var readinessProber *prober.Prober
 	// Start UI & metrics HTTP server.
 	{
 		router := route.New()
@@ -565,6 +569,8 @@ func runRule(
 			"web.prefix-header":   webPrefixHeaderName,
 		}
 
+		readinessProber = prober.NewProbeInRouter(component, router, logger)
+
 		ui.NewRuleUI(logger, mgr, alertQueryURL.String(), flagsMap).Register(router.WithPrefix(webRoutePrefix))
 
 		api := v1.NewAPI(logger, mgr)
@@ -582,11 +588,42 @@ func runRule(
 
 		g.Add(func() error {
 			level.Info(logger).Log("msg", "Listening for ui requests", "address", httpBindAddr)
+			readinessProber.SetHealthy()
 			return errors.Wrap(http.Serve(l, mux), "serve query")
-		}, func(error) {
+		}, func(err error) {
+			readinessProber.SetNotHealthy(err)
 			runutil.CloseWithLogOnErr(logger, l, "query and metric listener")
 		})
 	}
+
+	// Start gRPC server.
+	{
+		l, err := net.Listen("tcp", grpcBindAddr)
+		if err != nil {
+			return errors.Wrap(err, "listen API address")
+		}
+		logger := log.With(logger, "component", "store")
+
+		store := store.NewTSDBStore(logger, reg, db, lset)
+
+		opts, err := defaultGRPCServerOpts(logger, reg, tracer, cert, key, clientCA)
+		if err != nil {
+			return errors.Wrap(err, "setup gRPC options")
+		}
+		s := grpc.NewServer(opts...)
+		storepb.RegisterStoreServer(s, store)
+
+		g.Add(func() error {
+			readinessProber.SetReady()
+			return errors.Wrap(s.Serve(l), "serve gRPC")
+		}, func(err error) {
+			s.Stop()
+			readinessProber.SetNotReady(err)
+			runutil.CloseWithLogOnErr(logger, l, "store gRPC listener")
+		})
+	}
+
+	var uploads = true
 
 	confContentYaml, err := objStoreConfig.Content()
 	if err != nil {

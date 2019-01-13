@@ -25,10 +25,11 @@ import (
 	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
 	grpc_recovery "github.com/grpc-ecosystem/go-grpc-middleware/recovery"
 	grpc_prometheus "github.com/grpc-ecosystem/go-grpc-prometheus"
+	"github.com/improbable-eng/thanos/pkg/prober"
 	"github.com/improbable-eng/thanos/pkg/runutil"
 	"github.com/improbable-eng/thanos/pkg/tracing"
 	"github.com/oklog/run"
-	"github.com/opentracing/opentracing-go"
+	opentracing "github.com/opentracing/opentracing-go"
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -295,21 +296,24 @@ func defaultGRPCServerOpts(logger log.Logger, reg *prometheus.Registry, tracer o
 }
 
 // metricHTTPListenGroup is a run.Group that servers HTTP endpoint with only Prometheus metrics.
-func metricHTTPListenGroup(g *run.Group, logger log.Logger, reg *prometheus.Registry, httpBindAddr string) error {
+func metricHTTPListenGroup(g *run.Group, logger log.Logger, reg *prometheus.Registry, httpBindAddr string, component string) (*prober.Prober, error) {
 	mux := http.NewServeMux()
 	registerMetrics(mux, reg)
 	registerProfile(mux)
+	readinessProber := prober.NewProbeInMux(component, mux, logger)
 
 	l, err := net.Listen("tcp", httpBindAddr)
 	if err != nil {
-		return errors.Wrap(err, "listen metrics address")
+		return nil, errors.Wrap(err, "listen metrics address")
 	}
 
 	g.Add(func() error {
 		level.Info(logger).Log("msg", "Listening for metrics", "address", httpBindAddr)
+		readinessProber.SetHealthy()
 		return errors.Wrap(http.Serve(l, mux), "serve metrics")
-	}, func(error) {
+	}, func(err error) {
+		readinessProber.SetNotHealthy(err)
 		runutil.CloseWithLogOnErr(logger, l, "metric listener")
 	})
-	return nil
+	return readinessProber, nil
 }

@@ -16,11 +16,11 @@ import (
 	"github.com/improbable-eng/thanos/pkg/objstore/client"
 	"github.com/improbable-eng/thanos/pkg/runutil"
 	"github.com/oklog/run"
-	"github.com/opentracing/opentracing-go"
+	opentracing "github.com/opentracing/opentracing-go"
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/tsdb"
-	"gopkg.in/alecthomas/kingpin.v2"
+	kingpin "gopkg.in/alecthomas/kingpin.v2"
 )
 
 var (
@@ -183,6 +183,12 @@ func runCompact(
 		return errors.Wrap(err, "create compactor")
 	}
 
+	readinessProber, err := metricHTTPListenGroup(g, logger, reg, httpBindAddr, component)
+	if err != nil {
+		readinessProber.SetNotHealthy(err)
+		return err
+	}
+
 	var (
 		compactDir      = path.Join(dataDir, "compact")
 		downsamplingDir = path.Join(dataDir, "downsample")
@@ -275,14 +281,12 @@ func runCompact(
 
 			return errors.Wrap(err, "error executing compaction")
 		})
-	}, func(error) {
+	}, func(err error) {
+		readinessProber.SetNotReady(err)
 		cancel()
 	})
 
-	if err := metricHTTPListenGroup(g, logger, reg, httpBindAddr); err != nil {
-		return err
-	}
-
 	level.Info(logger).Log("msg", "starting compact node")
+	readinessProber.SetReady()
 	return nil
 }

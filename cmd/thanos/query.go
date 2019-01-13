@@ -12,12 +12,14 @@ import (
 	"path"
 	"time"
 
+	"github.com/improbable-eng/thanos/pkg/extprom"
+	"github.com/improbable-eng/thanos/pkg/prober"
+
 	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
 	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
 	grpc_prometheus "github.com/grpc-ecosystem/go-grpc-prometheus"
 	"github.com/improbable-eng/thanos/pkg/cluster"
-	"github.com/improbable-eng/thanos/pkg/component"
 	"github.com/improbable-eng/thanos/pkg/discovery/cache"
 	"github.com/improbable-eng/thanos/pkg/discovery/dns"
 	"github.com/improbable-eng/thanos/pkg/extprom"
@@ -29,7 +31,7 @@ import (
 	"github.com/improbable-eng/thanos/pkg/tracing"
 	"github.com/improbable-eng/thanos/pkg/ui"
 	"github.com/oklog/run"
-	"github.com/opentracing/opentracing-go"
+	opentracing "github.com/opentracing/opentracing-go"
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/route"
@@ -39,7 +41,7 @@ import (
 	"github.com/prometheus/tsdb/labels"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"gopkg.in/alecthomas/kingpin.v2"
+	kingpin "gopkg.in/alecthomas/kingpin.v2"
 )
 
 // registerQuery registers a query command.
@@ -133,6 +135,7 @@ func registerQuery(m map[string]setupFunc, app *kingpin.Application, name string
 			*key,
 			*caCert,
 			*serverName,
+			name,
 			*httpBindAddr,
 			*webRoutePrefix,
 			*webExternalPrefix,
@@ -248,6 +251,7 @@ func runQuery(
 	key string,
 	caCert string,
 	serverName string,
+	component string,
 	httpBindAddr string,
 	webRoutePrefix string,
 	webExternalPrefix string,
@@ -392,6 +396,7 @@ func runQuery(
 			cancel()
 		})
 	}
+	var readinessProber *prober.Prober
 	// Start query API + UI HTTP server.
 	{
 		router := route.New()
@@ -415,12 +420,7 @@ func runQuery(
 
 		api.Register(router.WithPrefix(path.Join(webRoutePrefix, "/api/v1")), tracer, logger)
 
-		router.Get("/-/healthy", func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			if _, err := fmt.Fprintf(w, "Thanos Querier is Healthy.\n"); err != nil {
-				level.Error(logger).Log("msg", "Could not write health check response.")
-			}
-		})
+		readinessProber = prober.NewProbeInRouter(component, router, logger)
 
 		mux := http.NewServeMux()
 		registerMetrics(mux, reg)
@@ -434,8 +434,10 @@ func runQuery(
 
 		g.Add(func() error {
 			level.Info(logger).Log("msg", "Listening for query and metrics", "address", httpBindAddr)
+			readinessProber.SetHealthy()
 			return errors.Wrap(http.Serve(l, mux), "serve query")
-		}, func(error) {
+		}, func(err error) {
+			readinessProber.SetNotHealthy(err)
 			runutil.CloseWithLogOnErr(logger, l, "query and metric listener")
 		})
 	}
@@ -457,9 +459,11 @@ func runQuery(
 
 		g.Add(func() error {
 			level.Info(logger).Log("msg", "Listening for StoreAPI gRPC", "address", grpcBindAddr)
+			readinessProber.SetReady()
 			return errors.Wrap(s.Serve(l), "serve gRPC")
-		}, func(error) {
+		}, func(err error) {
 			s.Stop()
+			readinessProber.SetNotReady(err)
 			runutil.CloseWithLogOnErr(logger, l, "store gRPC listener")
 		})
 	}
