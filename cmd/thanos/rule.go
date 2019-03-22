@@ -21,7 +21,7 @@ import (
 
 	"github.com/improbable-eng/thanos/pkg/extprom"
 	"github.com/improbable-eng/thanos/pkg/prober"
-	v1 "github.com/improbable-eng/thanos/pkg/query/api"
+	v1 "github.com/improbable-eng/thanos/pkg/rule/api"
 	opentracing "github.com/opentracing/opentracing-go"
 	kingpin "gopkg.in/alecthomas/kingpin.v2"
 
@@ -33,7 +33,6 @@ import (
 	"github.com/improbable-eng/thanos/pkg/component"
 	"github.com/improbable-eng/thanos/pkg/discovery/cache"
 	"github.com/improbable-eng/thanos/pkg/discovery/dns"
-	"github.com/improbable-eng/thanos/pkg/extprom"
 	"github.com/improbable-eng/thanos/pkg/objstore/client"
 	"github.com/improbable-eng/thanos/pkg/promclient"
 	"github.com/improbable-eng/thanos/pkg/runutil"
@@ -261,6 +260,8 @@ func runRule(
 	// FileSD query addresses.
 	fileSDCache := cache.New()
 	dnsProvider := dns.NewProvider(logger, extprom.NewSubsystem(reg, "rule_query"))
+
+	readinessProber := prober.NewProber(component.Rule.String(), logger)
 
 	// Hit the HTTP query API of query peers in randomized order until we get a result
 	// back or the context get canceled.
@@ -523,13 +524,14 @@ func runRule(
 			cancel()
 		})
 	}
+
 	// Start gRPC server.
 	{
 		l, err := net.Listen("tcp", grpcBindAddr)
 		if err != nil {
 			return errors.Wrap(err, "listen API address")
 		}
-		logger := log.With(logger, "component", component.Rule.String())
+		logger := log.With(logger, "component", "store")
 
 		store := store.NewTSDBStore(logger, reg, db, component.Rule, lset)
 
@@ -541,13 +543,15 @@ func runRule(
 		storepb.RegisterStoreServer(s, store)
 
 		g.Add(func() error {
+			readinessProber.SetReady()
 			return errors.Wrap(s.Serve(l), "serve gRPC")
-		}, func(error) {
+		}, func(err error) {
 			s.Stop()
+			readinessProber.SetNotReady(err)
 			runutil.CloseWithLogOnErr(logger, l, "store gRPC listener")
 		})
 	}
-	var readinessProber *prober.Prober
+
 	// Start UI & metrics HTTP server.
 	{
 		router := route.New()
@@ -569,7 +573,7 @@ func runRule(
 			"web.prefix-header":   webPrefixHeaderName,
 		}
 
-		readinessProber = prober.NewProbeInRouter(component, router, logger)
+		readinessProber.RegisterInRouter(router)
 
 		ui.NewRuleUI(logger, mgr, alertQueryURL.String(), flagsMap).Register(router.WithPrefix(webRoutePrefix))
 
@@ -596,33 +600,6 @@ func runRule(
 		})
 	}
 
-	// Start gRPC server.
-	{
-		l, err := net.Listen("tcp", grpcBindAddr)
-		if err != nil {
-			return errors.Wrap(err, "listen API address")
-		}
-		logger := log.With(logger, "component", "store")
-
-		store := store.NewTSDBStore(logger, reg, db, lset)
-
-		opts, err := defaultGRPCServerOpts(logger, reg, tracer, cert, key, clientCA)
-		if err != nil {
-			return errors.Wrap(err, "setup gRPC options")
-		}
-		s := grpc.NewServer(opts...)
-		storepb.RegisterStoreServer(s, store)
-
-		g.Add(func() error {
-			readinessProber.SetReady()
-			return errors.Wrap(s.Serve(l), "serve gRPC")
-		}, func(err error) {
-			s.Stop()
-			readinessProber.SetNotReady(err)
-			runutil.CloseWithLogOnErr(logger, l, "store gRPC listener")
-		})
-	}
-
 	var uploads = true
 
 	confContentYaml, err := objStoreConfig.Content()
@@ -630,7 +607,6 @@ func runRule(
 		return err
 	}
 
-	var uploads = true
 	if len(confContentYaml) == 0 {
 		level.Info(logger).Log("msg", "No supported bucket was configured, uploads will be disabled")
 		uploads = false

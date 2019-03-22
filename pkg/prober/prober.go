@@ -14,7 +14,8 @@ import (
 const (
 	healthyEndpointPath  = "/-/healthy"
 	readyEndpointPath    = "/-/ready"
-	okProbeText          = "thanos %s is %s"
+	okProbeText          = "thanos %v is %v"
+	errorProbeText       = "thanos %v is not %v. Reason: %v"
 	probeErrorHTTPStatus = 500
 	initialErrorText     = "thanos %s is initializing"
 )
@@ -68,19 +69,29 @@ func NewProber(component string, logger log.Logger) *Prober {
 	return prober
 }
 
+// HandleInMux registers readiness and liveness probes to mux
+func (p *Prober) RegisterInRouter(router *route.Router) {
+	router.Get(healthyEndpointPath, p.probeHandlerFunc(p.IsHealthy, "healthy"))
+	router.Get(readyEndpointPath, p.probeHandlerFunc(p.IsReady, "ready"))
+}
+
 // NewProbeInRouter returns new Prober which registers it's ready and health endpoints to given router.
 func NewProbeInRouter(component string, router *route.Router, logger log.Logger) *Prober {
 	prober := NewProber(component, logger)
-	router.Get(healthyEndpointPath, prober.probeHandlerFunc(prober.IsHealthy, "healthy"))
-	router.Get(readyEndpointPath, prober.probeHandlerFunc(prober.IsReady, "ready"))
+	prober.RegisterInRouter(router)
 	return prober
+}
+
+// RegisterInMux registers readiness and liveness probes to mux
+func (p *Prober) RegisterInMux(mux *http.ServeMux) {
+	mux.HandleFunc(healthyEndpointPath, p.probeHandlerFunc(p.IsHealthy, "healthy"))
+	mux.HandleFunc(readyEndpointPath, p.probeHandlerFunc(p.IsReady, "ready"))
 }
 
 // NewProbeInMux returns new Prober which registers it's ready and health endpoints to given mux.
 func NewProbeInMux(component string, mux *http.ServeMux, logger log.Logger) *Prober {
 	prober := NewProber(component, logger)
-	mux.HandleFunc(healthyEndpointPath, prober.probeHandlerFunc(prober.IsHealthy, "healthy"))
-	mux.HandleFunc(readyEndpointPath, prober.probeHandlerFunc(prober.IsReady, "ready"))
+	prober.RegisterInMux(mux)
 	return prober
 }
 
@@ -92,7 +103,7 @@ func (p *Prober) probeHandlerFunc(probeFunc func() error, probeType string) func
 				level.Error(p.getLogger()).Log("msg", "failed to write probe response", "probe type", probeType, "err", err)
 			}
 		} else {
-			http.Error(w, err.Error(), probeErrorHTTPStatus)
+			http.Error(w, fmt.Sprintf(errorProbeText, p.getComponent(), probeType, err), probeErrorHTTPStatus)
 		}
 	}
 }

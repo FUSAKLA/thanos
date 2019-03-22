@@ -139,8 +139,7 @@ then
     --log.level                 debug \
     --tsdb.path                 "./data/remote-write-receive-data" \
     --grpc-address              0.0.0.0:19891 \
-    --http-address              0.0.0.0:19691 \
-    --remote-write.address      0.0.0.0:19291 &
+    --http-address              0.0.0.0:19691 &
 
   mkdir -p "data/local-prometheus-data/"
   cat <<EOF > data/local-prometheus-data/prometheus.yml

@@ -11,12 +11,17 @@ We use *breaking* word for marking changes that are not backward compatible (rel
 
 ## Unreleased
 
+### Changed
+- Unified HTTP interface of `thanos-receive` which means dropping the `--remote-write.address` flag and the `/api/v1/receive` now lives on the `--http-address` interface
+
 ### Added
 - [#811](https://github.com/improbable-eng/thanos/pull/811) Remote write receiver
 - [#644](https://github.com/improbable-eng/thanos/issues/644) Added `/-/healthy` and `/-/ready` endpoints to all node types.
 
 ### Fixed
 - [#921](https://github.com/improbable-eng/thanos/pull/921) `thanos_objstore_bucket_last_successful_upload_time` now does not appear when no blocks have been uploaded so far
+- [#959](https://github.com/improbable-eng/thanos/issues/959) Fixed hanging `thanos-receive` on sent `SIGINT` signal
+- Fixed receive http metrics which were not exposed
 
 ## [v0.3.2](https://github.com/improbable-eng/thanos/releases/tag/v0.3.2) - 2019.03.04
 

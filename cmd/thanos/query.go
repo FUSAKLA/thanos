@@ -12,6 +12,7 @@ import (
 	"path"
 	"time"
 
+	"github.com/improbable-eng/thanos/pkg/component"
 	"github.com/improbable-eng/thanos/pkg/extprom"
 	"github.com/improbable-eng/thanos/pkg/prober"
 
@@ -22,7 +23,6 @@ import (
 	"github.com/improbable-eng/thanos/pkg/cluster"
 	"github.com/improbable-eng/thanos/pkg/discovery/cache"
 	"github.com/improbable-eng/thanos/pkg/discovery/dns"
-	"github.com/improbable-eng/thanos/pkg/extprom"
 	"github.com/improbable-eng/thanos/pkg/query"
 	v1 "github.com/improbable-eng/thanos/pkg/query/api"
 	"github.com/improbable-eng/thanos/pkg/runutil"
@@ -135,7 +135,6 @@ func registerQuery(m map[string]setupFunc, app *kingpin.Application, name string
 			*key,
 			*caCert,
 			*serverName,
-			name,
 			*httpBindAddr,
 			*webRoutePrefix,
 			*webExternalPrefix,
@@ -251,7 +250,6 @@ func runQuery(
 	key string,
 	caCert string,
 	serverName string,
-	component string,
 	httpBindAddr string,
 	webRoutePrefix string,
 	webExternalPrefix string,
@@ -281,6 +279,8 @@ func runQuery(
 
 	fileSDCache := cache.New()
 	dnsProvider := dns.NewProvider(logger, extprom.NewSubsystem(reg, "query_store_api"))
+
+	readinessProber := prober.NewProber(component.Query.String(), logger)
 
 	var (
 		stores = query.NewStoreSet(
@@ -321,6 +321,7 @@ func runQuery(
 			},
 		)
 	)
+
 	// Periodically update the store set with the addresses we see in our cluster.
 	{
 		ctx, cancel := context.WithCancel(context.Background())
@@ -369,6 +370,7 @@ func runQuery(
 			close(fileSDUpdates)
 		})
 	}
+
 	{
 		ctx, cancel := context.WithCancel(context.Background())
 		g.Add(func() error {
@@ -396,7 +398,7 @@ func runQuery(
 			cancel()
 		})
 	}
-	var readinessProber *prober.Prober
+
 	// Start query API + UI HTTP server.
 	{
 		router := route.New()
@@ -420,7 +422,7 @@ func runQuery(
 
 		api.Register(router.WithPrefix(path.Join(webRoutePrefix, "/api/v1")), tracer, logger)
 
-		readinessProber = prober.NewProbeInRouter(component, router, logger)
+		readinessProber.RegisterInRouter(router)
 
 		mux := http.NewServeMux()
 		registerMetrics(mux, reg)
@@ -441,6 +443,7 @@ func runQuery(
 			runutil.CloseWithLogOnErr(logger, l, "query and metric listener")
 		})
 	}
+
 	// Start query (proxy) gRPC StoreAPI.
 	{
 		l, err := net.Listen("tcp", grpcBindAddr)
@@ -462,8 +465,8 @@ func runQuery(
 			readinessProber.SetReady()
 			return errors.Wrap(s.Serve(l), "serve gRPC")
 		}, func(err error) {
-			s.Stop()
 			readinessProber.SetNotReady(err)
+			s.Stop()
 			runutil.CloseWithLogOnErr(logger, l, "store gRPC listener")
 		})
 	}

@@ -1,24 +1,16 @@
 package receive
 
 import (
-	"context"
 	"fmt"
 	"io/ioutil"
-	stdlog "log"
-	"net"
 	"net/http"
-	"sync/atomic"
 
 	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
 	"github.com/gogo/protobuf/proto"
 	"github.com/golang/snappy"
-	"github.com/improbable-eng/thanos/pkg/runutil"
+	"github.com/improbable-eng/thanos/pkg/prober"
 	"github.com/improbable-eng/thanos/pkg/store/prompb"
-	conntrack "github.com/mwitkow/go-conntrack"
-	"github.com/oklog/run"
-	"github.com/opentracing-contrib/go-stdlib/nethttp"
-	opentracing "github.com/opentracing/opentracing-go"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/common/route"
@@ -46,22 +38,21 @@ var (
 
 // Options for the web Handler.
 type Options struct {
-	Receiver      *Writer
-	ListenAddress string
-	Registry      prometheus.Registerer
-	ReadyStorage  *promtsdb.ReadyStorage
+	Receiver        *Writer
+	ReadinessProber *prober.Prober
+	Registry        prometheus.Registerer
+	ReadyStorage    *promtsdb.ReadyStorage
 }
 
 // Handler serves a Prometheus remote write receiving HTTP endpoint.
 type Handler struct {
-	readyStorage *promtsdb.ReadyStorage
-	logger       log.Logger
-	receiver     *Writer
-	router       *route.Router
-	options      *Options
-	quitCh       chan struct{}
-
-	ready uint32 // ready is uint32 rather than boolean to be able to use atomic functions.
+	readyStorage    *promtsdb.ReadyStorage
+	logger          log.Logger
+	receiver        *Writer
+	router          *route.Router
+	options         *Options
+	quitCh          chan struct{}
+	readinessProber *prober.Prober
 }
 
 func instrumentHandler(handlerName string, handler http.HandlerFunc) http.HandlerFunc {
@@ -74,6 +65,12 @@ func instrumentHandler(handlerName string, handler http.HandlerFunc) http.Handle
 	)
 }
 
+func NewHandlerInMux(mux *http.ServeMux, logger log.Logger, o *Options) *Handler {
+	h := NewHandler(logger, o)
+	mux.Handle("/", h.router)
+	return h
+}
+
 func NewHandler(logger log.Logger, o *Options) *Handler {
 	router := route.New().WithInstrumentation(instrumentHandler)
 	if logger == nil {
@@ -81,41 +78,56 @@ func NewHandler(logger log.Logger, o *Options) *Handler {
 	}
 
 	h := &Handler{
-		logger:       logger,
-		router:       router,
-		readyStorage: o.ReadyStorage,
-		receiver:     o.Receiver,
-		options:      o,
-		quitCh:       make(chan struct{}),
+		logger:          logger,
+		router:          router,
+		readyStorage:    o.ReadyStorage,
+		receiver:        o.Receiver,
+		options:         o,
+		quitCh:          make(chan struct{}),
+		readinessProber: o.ReadinessProber,
 	}
 
 	readyf := h.testReady
 	router.Post("/api/v1/receive", readyf(h.receive))
+	o.Registry.MustRegister(
+		requestDuration,
+		responseSize,
+	)
 
 	return h
 }
 
+// Ready sets Handler to be healthy.
+func (h *Handler) Healthy() {
+	h.readinessProber.SetHealthy()
+}
+
 // Ready sets Handler to be ready.
 func (h *Handler) Ready() {
-	atomic.StoreUint32(&h.ready, 1)
+	h.readinessProber.SetReady()
 }
 
 // Verifies whether the server is ready or not.
-func (h *Handler) isReady() bool {
-	ready := atomic.LoadUint32(&h.ready)
-	return ready > 0
+func (h *Handler) isReady() error {
+	return h.readinessProber.IsReady()
+}
+
+// HandleInMux hadles this router in specified mux on given part
+func (h *Handler) HandleInMux(path string, mux *http.ServeMux) {
+	mux.Handle(path, h.router)
 }
 
 // Checks if server is ready, calls f if it is, returns 503 if it is not.
 func (h *Handler) testReady(f http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if h.isReady() {
+		ready_err := h.isReady()
+		if ready_err == nil {
 			f(w, r)
 			return
 		}
 
 		w.WriteHeader(http.StatusServiceUnavailable)
-		_, err := fmt.Fprintf(w, "Service Unavailable")
+		_, err := fmt.Fprintf(w, fmt.Sprintf("Service Unavailable. Reason: %v", ready_err))
 		if err != nil {
 			h.logger.Log("msg", "failed to write to response body", "err", err)
 		}
@@ -130,43 +142,6 @@ func (h *Handler) Quit() <-chan struct{} {
 // Checks if server is ready, calls f if it is, returns 503 if it is not.
 func (h *Handler) testReadyHandler(f http.Handler) http.HandlerFunc {
 	return h.testReady(f.ServeHTTP)
-}
-
-// Run serves the HTTP endpoints.
-func (h *Handler) Run(ctx context.Context) error {
-	level.Info(h.logger).Log("msg", "Start listening for connections", "address", h.options.ListenAddress)
-
-	listener, err := net.Listen("tcp", h.options.ListenAddress)
-	if err != nil {
-		return err
-	}
-
-	// Monitor incoming connections with conntrack.
-	listener = conntrack.NewListener(listener,
-		conntrack.TrackWithName("http"),
-		conntrack.TrackWithTracing())
-
-	operationName := nethttp.OperationNameFunc(func(r *http.Request) string {
-		return fmt.Sprintf("%s %s", r.Method, r.URL.Path)
-	})
-	mux := http.NewServeMux()
-	mux.Handle("/", h.router)
-
-	errlog := stdlog.New(log.NewStdlibAdapter(level.Error(h.logger)), "", 0)
-
-	httpSrv := &http.Server{
-		Handler:  nethttp.Middleware(opentracing.GlobalTracer(), mux, operationName),
-		ErrorLog: errlog,
-	}
-
-	var g run.Group
-	g.Add(func() error {
-		return httpSrv.Serve(listener)
-	}, func(error) {
-		runutil.CloseWithLogOnErr(h.logger, listener, "receive HTTP listener")
-	})
-
-	return g.Run()
 }
 
 func (h *Handler) receive(w http.ResponseWriter, req *http.Request) {

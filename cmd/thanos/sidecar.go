@@ -27,8 +27,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/tsdb/labels"
 	"google.golang.org/grpc"
-  "gopkg.in/alecthomas/kingpin.v2"
-	yaml "gopkg.in/yaml.v2"
+	kingpin "gopkg.in/alecthomas/kingpin.v2"
 )
 
 func registerSidecar(m map[string]setupFunc, app *kingpin.Application, name string) {
@@ -105,8 +104,9 @@ func runSidecar(
 ) error {
 	var m = &promMetadata{
 		promURL: promURL,
+	}
 
-	readinessProber, err := metricHTTPListenGroup(g, logger, reg, httpBindAddr, component)
+	readinessProber, err := metricHTTPListenGroup(g, logger, reg, httpBindAddr, component.Sidecar.String())
 	if err != nil {
 		readinessProber.SetNotHealthy(err)
 		return err

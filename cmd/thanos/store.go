@@ -10,7 +10,6 @@ import (
 	"github.com/go-kit/kit/log/level"
 	"github.com/improbable-eng/thanos/pkg/cluster"
 	"github.com/improbable-eng/thanos/pkg/objstore/client"
-	"github.com/improbable-eng/thanos/pkg/prober"
 	"github.com/improbable-eng/thanos/pkg/runutil"
 	"github.com/improbable-eng/thanos/pkg/store"
 	"github.com/improbable-eng/thanos/pkg/store/storepb"
@@ -93,16 +92,16 @@ func runStore(
 	syncInterval time.Duration,
 	blockSyncConcurrency int,
 ) error {
-	var readinessProber *prober.Prober
+
+	readinessProber, err := metricHTTPListenGroup(g, logger, reg, httpBindAddr, component)
+	if err != nil {
+		readinessProber.SetNotHealthy(err)
+		return err
+	}
+
 	{
 		confContentYaml, err := objStoreConfig.Content()
 		if err != nil {
-			return err
-		}
-
-		readinessProber, err = metricHTTPListenGroup(g, logger, reg, httpBindAddr, component)
-		if err != nil {
-			readinessProber.SetNotHealthy(err)
 			return err
 		}
 
@@ -132,16 +131,17 @@ func runStore(
 			return errors.Wrap(err, "create object storage store")
 		}
 
-		begin := time.Now()
-		level.Debug(logger).Log("msg", "initializing bucket store")
-		if err := bs.InitialSync(context.Background()); err != nil {
-			return errors.Wrap(err, "bucket store initial sync")
-		}
-		level.Debug(logger).Log("msg", "bucket store ready", "init_duration", time.Since(begin).String())
-
 		ctx, cancel := context.WithCancel(context.Background())
 		g.Add(func() error {
 			defer runutil.CloseWithLogOnErr(logger, bkt, "bucket client")
+
+			begin := time.Now()
+			level.Debug(logger).Log("msg", "initializing bucket store")
+			if err := bs.InitialSync(ctx); err != nil {
+				return errors.Wrap(err, "bucket store initial sync")
+			}
+			level.Debug(logger).Log("msg", "bucket store ready", "init_duration", time.Since(begin).String())
+			readinessProber.SetReady()
 
 			err := runutil.Repeat(syncInterval, ctx.Done(), func() error {
 				if err := bs.SyncBlocks(ctx); err != nil {
@@ -172,7 +172,6 @@ func runStore(
 
 		g.Add(func() error {
 			level.Info(logger).Log("msg", "Listening for StoreAPI gRPC", "address", grpcBindAddr)
-			readinessProber.SetReady()
 			return errors.Wrap(s.Serve(l), "serve gRPC")
 		}, func(err error) {
 			readinessProber.SetNotReady(err)
@@ -202,6 +201,5 @@ func runStore(
 	}
 
 	level.Info(logger).Log("msg", "starting store node")
-	readinessProber.SetReady()
 	return nil
 }
