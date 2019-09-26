@@ -165,6 +165,7 @@ func (p *PrometheusStore) Series(r *storepb.SeriesRequest, s storepb.Store_Serie
 
 	queryPrometheusSpan, ctx := tracing.StartSpan(s.Context(), "query_prometheus")
 
+	level.Debug(p.logger).Log("msg", "processing PromQL", "query", q)
 	httpResp, err := p.startPromSeries(ctx, q)
 	if err != nil {
 		queryPrometheusSpan.Finish()
@@ -347,8 +348,8 @@ func (p *PrometheusStore) fetchSampledResponse(ctx context.Context, resp *http.R
 }
 
 func (p *PrometheusStore) chunkSamples(series *prompb.TimeSeries, maxSamplesPerChunk int) (chks []storepb.AggrChunk, err error) {
+	level.Debug(p.logger).Log("msg", "processing chunk samples of series", "labels", series.Labels, "samples", series.Samples)
 	samples := series.Samples
-
 	for len(samples) > 0 {
 		chunkSize := len(samples)
 		if chunkSize > maxSamplesPerChunk {
@@ -357,6 +358,7 @@ func (p *PrometheusStore) chunkSamples(series *prompb.TimeSeries, maxSamplesPerC
 
 		enc, cb, err := p.encodeChunk(samples[:chunkSize])
 		if err != nil {
+			level.Warn(p.logger).Log("msg", "failed to encode chunk because of", "err", err)
 			return nil, status.Error(codes.Unknown, err.Error())
 		}
 
@@ -448,6 +450,7 @@ func (p *PrometheusStore) encodeChunk(ss []prompb.Sample) (storepb.Chunk_Encodin
 
 	a, err := c.Appender()
 	if err != nil {
+		level.Warn(p.logger).Log("msg", "failed to create Appender because of", "err", err)
 		return 0, nil, err
 	}
 	for _, s := range ss {
