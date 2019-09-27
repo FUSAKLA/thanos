@@ -294,6 +294,26 @@ func defaultGRPCServerOpts(logger log.Logger, cert, key, clientCA string) ([]grp
 	return append(opts, grpc.Creds(credentials.NewTLS(tlsCfg))), nil
 }
 
+func unaryLoggingServerInterceptor(l log.Logger) func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+		resp, err := handler(ctx, req)
+		if err != nil {
+			level.Error(l).Log("msg", "handling gRPC request", "type", "unary", "err", err)
+		}
+		return resp, err
+	}
+}
+
+func streamLoggingServerInterceptor(l log.Logger) func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		err := handler(srv, ss)
+		if err != nil {
+			level.Error(l).Log("msg", "handling gRPC request", "type", "stream", "err", err)
+		}
+		return err
+	}
+}
+
 func newStoreGRPCServer(logger log.Logger, reg *prometheus.Registry, tracer opentracing.Tracer, srv storepb.StoreServer, opts []grpc.ServerOption) *grpc.Server {
 	met := grpc_prometheus.NewServerMetrics()
 	met.EnableHandlingTimeHistogram(
@@ -315,11 +335,13 @@ func newStoreGRPCServer(logger log.Logger, reg *prometheus.Registry, tracer open
 	opts = append(opts,
 		grpc.MaxSendMsgSize(math.MaxInt32),
 		grpc_middleware.WithUnaryServerChain(
+			unaryLoggingServerInterceptor(logger),
 			met.UnaryServerInterceptor(),
 			tracing.UnaryServerInterceptor(tracer),
 			grpc_recovery.UnaryServerInterceptor(grpc_recovery.WithRecoveryHandler(grpcPanicRecoveryHandler)),
 		),
 		grpc_middleware.WithStreamServerChain(
+			streamLoggingServerInterceptor(logger),
 			met.StreamServerInterceptor(),
 			tracing.StreamServerInterceptor(tracer),
 			grpc_recovery.StreamServerInterceptor(grpc_recovery.WithRecoveryHandler(grpcPanicRecoveryHandler)),
