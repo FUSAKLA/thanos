@@ -5,6 +5,8 @@ import (
 	"math"
 	"sort"
 
+	"github.com/go-kit/kit/log/level"
+
 	"github.com/go-kit/kit/log"
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
@@ -93,12 +95,14 @@ func (s *TSDBStore) Series(r *storepb.SeriesRequest, srv storepb.Store_SeriesSer
 
 	q, err := s.db.Querier(r.MinTime, r.MaxTime)
 	if err != nil {
+		level.Warn(s.logger).Log("msg", "tsdb series new querier", "err", err)
 		return status.Error(codes.Internal, err.Error())
 	}
 	defer runutil.CloseWithLogOnErr(s.logger, q, "close tsdb querier series")
 
 	set, err := q.Select(matchers...)
 	if err != nil {
+		level.Warn(s.logger).Log("msg", "tsdb series select", "err", err)
 		return status.Error(codes.Internal, err.Error())
 	}
 
@@ -116,6 +120,7 @@ func (s *TSDBStore) Series(r *storepb.SeriesRequest, srv storepb.Store_SeriesSer
 		// See: https://github.com/thanos-io/thanos/pull/1038
 		c, err := s.encodeChunks(series.Iterator(), math.MaxUint16)
 		if err != nil {
+			level.Warn(s.logger).Log("msg", "tsdb series encode chunks", "err", err)
 			return status.Errorf(codes.Internal, "encode chunk: %s", err)
 		}
 
@@ -203,12 +208,14 @@ func (s *TSDBStore) LabelNames(ctx context.Context, _ *storepb.LabelNamesRequest
 ) {
 	q, err := s.db.Querier(math.MinInt64, math.MaxInt64)
 	if err != nil {
+		level.Warn(s.logger).Log("msg", "tsdb label names new querier", "err", err)
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	defer runutil.CloseWithLogOnErr(s.logger, q, "close tsdb querier label names")
 
 	res, err := q.LabelNames()
 	if err != nil {
+		level.Warn(s.logger).Log("msg", "tsdb label names query", "err", err)
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	return &storepb.LabelNamesResponse{Names: res}, nil
@@ -220,12 +227,14 @@ func (s *TSDBStore) LabelValues(ctx context.Context, r *storepb.LabelValuesReque
 ) {
 	q, err := s.db.Querier(math.MinInt64, math.MaxInt64)
 	if err != nil {
+		level.Warn(s.logger).Log("msg", "tsdb label values new querier", "err", err)
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	defer runutil.CloseWithLogOnErr(s.logger, q, "close tsdb querier label values")
 
 	res, err := q.LabelValues(r.Label)
 	if err != nil {
+		level.Warn(s.logger).Log("msg", "tsdb label names query", "err", err)
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	return &storepb.LabelValuesResponse{Values: res}, nil

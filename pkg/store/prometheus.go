@@ -499,6 +499,7 @@ func (p *PrometheusStore) LabelNames(ctx context.Context, _ *storepb.LabelNamesR
 
 	req, err := http.NewRequest("GET", u.String(), nil)
 	if err != nil {
+		level.Warn(p.logger).Log("msg", "label names new request", "err", err)
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
@@ -507,11 +508,13 @@ func (p *PrometheusStore) LabelNames(ctx context.Context, _ *storepb.LabelNamesR
 
 	resp, err := p.client.Do(req.WithContext(ctx))
 	if err != nil {
+		level.Warn(p.logger).Log("msg", "prometheus client do", "err", err)
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	defer runutil.ExhaustCloseWithLogOnErr(p.logger, resp.Body, "label names request body")
 
 	if resp.StatusCode/100 != 2 {
+		level.Warn(p.logger).Log("msg", fmt.Sprintf("request Prometheus server failed, code %s", resp.Status), "resp", resp.Body)
 		return nil, status.Error(codes.Internal, fmt.Sprintf("request Prometheus server failed, code %s", resp.Status))
 	}
 
@@ -527,16 +530,19 @@ func (p *PrometheusStore) LabelNames(ctx context.Context, _ *storepb.LabelNamesR
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
+		level.Warn(p.logger).Log("msg", "prometheus label names read all", "err", err)
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
 	if err = json.Unmarshal(body, &m); err != nil {
+		level.Warn(p.logger).Log("msg", "prometheus label names unmarshall", "err", err)
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
 	if m.Status != "success" {
 		code, exists := statusToCode[resp.StatusCode]
 		if !exists {
+			level.Warn(p.logger).Log("msg", "prometheus label names unknown status", "status", m.Status)
 			return nil, status.Error(codes.Internal, m.Error)
 		}
 		return nil, status.Error(code, m.Error)
@@ -559,6 +565,7 @@ func (p *PrometheusStore) LabelValues(ctx context.Context, r *storepb.LabelValue
 
 	req, err := http.NewRequest("GET", u.String(), nil)
 	if err != nil {
+		level.Warn(p.logger).Log("msg", "prometheus label values new request", "err", err)
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
@@ -567,11 +574,13 @@ func (p *PrometheusStore) LabelValues(ctx context.Context, r *storepb.LabelValue
 
 	resp, err := p.client.Do(req.WithContext(ctx))
 	if err != nil {
+		level.Warn(p.logger).Log("msg", "prometheus label values client do", "err", err)
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	defer runutil.ExhaustCloseWithLogOnErr(p.logger, resp.Body, "label values request body")
 
 	if resp.StatusCode/100 != 2 {
+		level.Warn(p.logger).Log("msg", "request Prometheus server failed", "status", resp.Status)
 		return nil, status.Error(codes.Internal, fmt.Sprintf("request Prometheus server failed, code %s", resp.Status))
 	}
 
@@ -586,10 +595,12 @@ func (p *PrometheusStore) LabelValues(ctx context.Context, r *storepb.LabelValue
 	}
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
+		level.Warn(p.logger).Log("msg", "prometheus label values read all", "err", err)
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
 	if err = json.Unmarshal(body, &m); err != nil {
+		level.Warn(p.logger).Log("msg", "prometheus label values unmarshall", "err", err)
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
@@ -598,6 +609,7 @@ func (p *PrometheusStore) LabelValues(ctx context.Context, r *storepb.LabelValue
 	if m.Status != "success" {
 		code, exists := statusToCode[resp.StatusCode]
 		if !exists {
+			level.Warn(p.logger).Log("msg", "prometheus label values unknown status", "status", m.Status)
 			return nil, status.Error(codes.Internal, m.Error)
 		}
 		return nil, status.Error(code, m.Error)

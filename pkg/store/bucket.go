@@ -907,10 +907,12 @@ func (s *BucketStore) Series(req *storepb.SeriesRequest, srv storepb.Store_Serie
 			s.metrics.chunkSizeBytes.Observe(float64(chunksSize(series.Chunks)))
 
 			if err := srv.Send(storepb.NewSeriesResponse(&series)); err != nil {
+				level.Warn(s.logger).Log("msg", "bucket send series response", "err", err)
 				return status.Error(codes.Unknown, errors.Wrap(err, "send series response").Error())
 			}
 		}
 		if set.Err() != nil {
+			level.Warn(s.logger).Log("msg", "expand series set", "err", err)
 			return status.Error(codes.Unknown, errors.Wrap(set.Err(), "expand series set").Error())
 		}
 		stats.mergeDuration = time.Since(begin)
@@ -954,6 +956,7 @@ func (s *BucketStore) LabelNames(ctx context.Context, _ *storepb.LabelNamesReque
 	s.mtx.RUnlock()
 
 	if err := g.Wait(); err != nil {
+		level.Warn(s.logger).Log("msg", "bucket group wait", "err", "")
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	return &storepb.LabelNamesResponse{

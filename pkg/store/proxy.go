@@ -282,6 +282,7 @@ func (s *ProxyStore) Series(r *storepb.SeriesRequest, srv storepb.Store_SeriesSe
 
 	for resp := range respRecv {
 		if err := srv.Send(resp); err != nil {
+			level.Warn(s.logger).Log("msg", "proxy send series response", "err", err)
 			return status.Error(codes.Unknown, errors.Wrap(err, "send series response").Error())
 		}
 	}
