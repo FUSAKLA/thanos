@@ -298,7 +298,13 @@ func unaryLoggingServerInterceptor(l log.Logger) func(ctx context.Context, req i
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 		resp, err := handler(ctx, req)
 		if err != nil {
-			level.Error(l).Log("msg", "handling gRPC request", "type", "unary", "err", err)
+			grpcStatus := "<is-not-gRPC-status>"
+			if se, ok := err.(interface {
+				GRPCStatus() *status.Status
+			}); ok {
+				grpcStatus = se.GRPCStatus().Code().String()
+			}
+			level.Error(l).Log("msg", "handling gRPC request", "type", "unary", "err", err, "err_type", fmt.Sprintf("%T", err), "status", grpcStatus)
 		}
 		return resp, err
 	}
@@ -308,7 +314,13 @@ func streamLoggingServerInterceptor(l log.Logger) func(srv interface{}, ss grpc.
 	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 		err := handler(srv, ss)
 		if err != nil {
-			level.Error(l).Log("msg", "handling gRPC request", "type", "stream", "err", err)
+			grpcStatus := "<is-not-gRPC-status>"
+			if se, ok := err.(interface {
+				GRPCStatus() *status.Status
+			}); ok {
+				grpcStatus = se.GRPCStatus().Code().String()
+			}
+			level.Error(l).Log("msg", "handling gRPC request", "type", "stream", "err", err, "err_type", fmt.Sprintf("%T", err), "status", grpcStatus)
 		}
 		return err
 	}
