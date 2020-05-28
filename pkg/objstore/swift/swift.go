@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/gophercloud/gophercloud/openstack/objectstorage/v1/containers"
 	"github.com/gophercloud/gophercloud/openstack/objectstorage/v1/objects"
 	"github.com/gophercloud/gophercloud/pagination"
+	utils_objects "github.com/gophercloud/utils/openstack/objectstorage/v1/objects"
 	"github.com/pkg/errors"
 	"github.com/thanos-io/thanos/pkg/objstore"
 	"gopkg.in/yaml.v2"
@@ -41,12 +43,14 @@ type SwiftConfig struct {
 	ProjectDomainName string `yaml:"project_domain_name"`
 	RegionName        string `yaml:"region_name"`
 	ContainerName     string `yaml:"container_name"`
+	SegmentSize       int64  `yaml:"segment_size"`
 }
 
 type Container struct {
-	logger log.Logger
-	client *gophercloud.ServiceClient
-	name   string
+	logger      log.Logger
+	client      *gophercloud.ServiceClient
+	name        string
+	segmentSize int64
 }
 
 func NewContainer(logger log.Logger, conf []byte) (*Container, error) {
@@ -73,9 +77,10 @@ func NewContainer(logger log.Logger, conf []byte) (*Container, error) {
 	}
 
 	return &Container{
-		logger: logger,
-		client: client,
-		name:   sc.ContainerName,
+		logger:      logger,
+		client:      client,
+		name:        sc.ContainerName,
+		segmentSize: sc.SegmentSize,
 	}, nil
 }
 
@@ -172,9 +177,15 @@ func (c *Container) IsObjNotFoundErr(err error) bool {
 
 // Upload writes the contents of the reader as an object into the container.
 func (c *Container) Upload(ctx context.Context, name string, r io.Reader) error {
-	options := &objects.CreateOpts{Content: r}
-	res := objects.Create(c.client, c.name, name, options)
-	return res.Err
+	uploadOpts := utils_objects.UploadOpts{SegmentSize: c.segmentSize, Content: r}
+	res, err := utils_objects.Upload(c.client, c.name, name, &uploadOpts)
+	if err != nil {
+		return err
+	}
+	if !res.Success {
+		return fmt.Errorf("failed to upload object %s to swift storage: %s", name, res.Status)
+	}
+	return nil
 }
 
 // Delete removes the object with the given name.
@@ -249,6 +260,7 @@ func (c *Container) deleteContainer(name string) error {
 }
 
 func configFromEnv() SwiftConfig {
+	segmentSize, _ := strconv.ParseInt(os.Getenv("OS_OBJECT_SEGMENT_SIZE"), 10, 64)
 	c := SwiftConfig{
 		AuthUrl:           os.Getenv("OS_AUTH_URL"),
 		Username:          os.Getenv("OS_USERNAME"),
@@ -261,6 +273,7 @@ func configFromEnv() SwiftConfig {
 		UserDomainName:    os.Getenv("OS_USER_DOMAIN_NAME"),
 		ProjectDomainID:   os.Getenv("OS_PROJECT_DOMAIN_ID"),
 		ProjectDomainName: os.Getenv("OS_PROJECT_DOMAIN_NAME"),
+		SegmentSize:       segmentSize,
 	}
 
 	return c
