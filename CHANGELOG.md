@@ -24,7 +24,7 @@ We use *breaking* word for marking changes that are not backward compatible (rel
 - [#2667](https://github.com/thanos-io/thanos/pull/2667) Compact: the deprecated flag `--index.generate-missing-cache-file` and the metric `thanos_compact_generated_index_total` were removed.
 
 ### Added
-- [#TBA](https://github.com/thanos-io/thanos/pull/TBA) Tools: bucket replicate now allows passing repeated `--compaction` and `--resolution` flags.
+- [#2671](https://github.com/thanos-io/thanos/pull/2671) Tools: bucket replicate now allows passing repeated `--compaction` and `--resolution` flags.
 
 ## [v0.13.0](https://github.com/thanos-io/thanos/releases) - IN PROGRESS
 
