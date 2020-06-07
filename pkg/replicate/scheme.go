@@ -338,8 +338,13 @@ func (rs *replicationScheme) ensureObjectReplicated(ctx context.Context, objectN
 	}
 
 	defer r.Close()
+	buf := &bytes.Buffer{}
+	_, err = io.Copy(buf, r)
+	if err != nil {
+		return err
+	}
 
-	if err = rs.toBkt.Upload(ctx, objectName, r); err != nil {
+	if err = rs.toBkt.Upload(ctx, objectName, buf); err != nil {
 		return errors.Wrapf(err, "upload %v to target bucket", objectName)
 	}
 

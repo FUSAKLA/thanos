@@ -4,7 +4,6 @@
 package objstore
 
 import (
-	"bytes"
 	"context"
 	"io"
 	"os"
@@ -91,6 +90,10 @@ type ObjectAttributes struct {
 	LastModified time.Time `json:"last_modified"`
 }
 
+type lenghter interface {
+	Len() int
+}
+
 // TryToGetSize tries to get upfront size from reader.
 // TODO(https://github.com/thanos-io/thanos/issues/678): Remove guessing length when minio provider will support multipart upload without this.
 func TryToGetSize(r io.Reader) (int64, error) {
@@ -101,10 +104,8 @@ func TryToGetSize(r io.Reader) (int64, error) {
 			return 0, errors.Wrap(err, "os.File.Stat()")
 		}
 		return fileInfo.Size(), nil
-	case *bytes.Buffer:
+	case lenghter:
 		return int64(f.Len()), nil
-	case *strings.Reader:
-		return f.Size(), nil
 	}
 	return 0, errors.New("unsupported type of io.Reader")
 }
